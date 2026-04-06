@@ -1,0 +1,35 @@
+# ==============================================================================
+# DRIVER DROWSINESS DETECTION - Fixed Dependencies
+# Target: Raspberry Pi 4 (AArch64 / ARMv7) | Python 3.11.9 (via pyenv)
+#
+# NOTE on TFLite:
+#   On Raspberry Pi, install the lightweight runtime instead of full TensorFlow:
+#   $ pip install tflite-runtime  (pre-built wheel for ARM)
+#   On Mac (dev machine), use:
+#   $ pip install tensorflow  (includes TFLite interpreter)
+# ==============================================================================
+
+# --- Core Computer Vision & Stream ---
+opencv-python==4.9.0.80          # Camera capture, frame processing, drawing
+
+# --- Face Mesh / Landmark Detection ---
+# Pinned to 0.10.5 for proven stability on Mac Silicon & Raspberry Pi ARM
+mediapipe==0.10.5
+
+# --- Numerical / Matrix Operations ---
+numpy==1.26.4                    # Fast geometric math (EAR, MAR, solvePnP)
+
+# --- TFLite Inference (choose one based on platform) ---
+# On Raspberry Pi:        pip install tflite-runtime
+# On Mac (development):   pip install tensorflow==2.16.1
+# Uncomment the line matching your current environment:
+# tflite-runtime==2.14.0         # Raspberry Pi ARM - lightweight runtime only
+# tensorflow==2.16.1             # Mac development machine - full package
+
+# --- System / GPIO (Raspberry Pi only) ---
+# RPi.GPIO==0.7.1                # GPIO control for buzzer/LED alerts (Pi only)
+# gpiozero==2.0.1                # Higher-level GPIO abstraction (Pi only)
+
+# --- Utilities ---
+imutils==0.5.4                   # Convenience wrappers for OpenCV operations
+scipy==1.13.0                    # scipy.spatial.distance for landmark math
