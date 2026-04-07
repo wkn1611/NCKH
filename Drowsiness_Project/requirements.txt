@@ -33,3 +33,6 @@ numpy==1.26.4                    # Fast geometric math (EAR, MAR, solvePnP)
 # --- Utilities ---
 imutils==0.5.4                   # Convenience wrappers for OpenCV operations
 scipy==1.13.0                    # scipy.spatial.distance for landmark math
+
+# --- Streaming Server ---
+Flask==3.0.3                     # Lightweight MJPEG web server (Pi → MacBook browser)

@@ -1,19 +1,26 @@
 """
 src/main.py
 ───────────
-Master entry point — Perception Pipeline (Camera + FaceMesh).
+Master entry point — Edge-to-Client Streaming Architecture.
 
-Supports two runtime modes controlled by the HEADLESS_MODE flag:
+Deployment model:
+  ┌──────────────────────────────────────────────────────────────┐
+  │  Raspberry Pi 4                                              │
+  │                                                              │
+  │  [Camera] → CameraHandler (thread)                          │
+  │                  │                                           │
+  │                  ▼                                           │
+  │           FaceMeshDetector                                   │
+  │                  │ annotated frame                           │
+  │                  ▼                                           │
+  │           MJPEGStreamer.push_frame()  ──► Flask :5000        │
+  └──────────────────────────────────────────────────────────────┘
+                                                  │
+                              Wi-Fi (local network)│
+                                                  ▼
+                                 MacBook browser → http://<Pi-IP>:5000
 
-  HEADLESS_MODE = False  (default, local Mac/desktop)
-    • Renders face mesh overlay and HUD via cv2.imshow.
-    • Exit with the 'q' key in the display window.
-
-  HEADLESS_MODE = True   (Raspberry Pi over SSH — no display server)
-    • All cv2.imshow / cv2.waitKey / cv2.circle calls are skipped entirely.
-    • FPS is printed to stdout once per second (no terminal spam).
-    • Exit cleanly with Ctrl+C — KeyboardInterrupt is caught and the camera
-      and MediaPipe resources are released before the process dies.
+Exit:  Ctrl+C in the SSH terminal triggers KeyboardInterrupt → clean teardown.
 
 Next step → extraction/ module (EAR, MAR, Head Pose, ROI crop).
 """
@@ -28,22 +35,12 @@ import cv2
 import numpy as np
 
 # ── Path setup ─────────────────────────────────────────────────────────────────
-# Allows running as:  python src/main.py  from the Drowsiness_Project/ root.
 _SRC_DIR = Path(__file__).resolve().parent
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
 from perception import CameraHandler, FaceMeshDetector, FaceMeshResult
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  RUNTIME CONFIGURATION
-#  ─────────────────────
-#  Flip this flag to switch between desktop (GUI) and Pi (headless SSH) modes.
-# ══════════════════════════════════════════════════════════════════════════════
-HEADLESS_MODE: bool = False   # ← Set to True before deploying to Raspberry Pi.
-
-# ── FPS logger interval ────────────────────────────────────────────────────────
-_FPS_LOG_INTERVAL_SEC: float = 1.0   # Print FPS to console at most once/second.
+from utils import MJPEGStreamer
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -53,28 +50,38 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 
-# ── GUI constants (only referenced when HEADLESS_MODE = False) ─────────────────
-_WINDOW_TITLE: str   = "Drowsiness Detection — Perception Test"
-_FONT                = cv2.FONT_HERSHEY_SIMPLEX
-_GREEN: tuple        = (0, 255, 0)
-_RED:   tuple        = (0, 60, 220)
-_WHITE: tuple        = (255, 255, 255)
-_DARK:  tuple        = (30, 30, 30)
+# ══════════════════════════════════════════════════════════════════════════════
+#  CONFIGURATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+STREAM_HOST: str  = "0.0.0.0"   # Bind all interfaces — reachable from MacBook.
+STREAM_PORT: int  = 5000
+JPEG_QUALITY: int = 75           # Quality / bandwidth tradeoff (scale: 0–100).
+
+# Console FPS log printed at most once per this interval (avoids terminal spam).
+_FPS_LOG_INTERVAL_SEC: float = 1.0
+
+# ── HUD drawing constants ──────────────────────────────────────────────────────
+_FONT          = cv2.FONT_HERSHEY_SIMPLEX
+_GREEN: tuple  = (0, 255, 0)
+_RED:   tuple  = (0, 60, 220)
+_WHITE: tuple  = (255, 255, 255)
+_DARK:  tuple  = (20, 20, 20)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  GUI helpers  (only called when HEADLESS_MODE = False)
+#  HUD renderer
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _draw_hud(frame: np.ndarray, fps: float, detected: bool) -> None:
     """
-    Render a semi-transparent HUD bar at the top of the frame (in-place).
+    Burn a semi-transparent status bar into the frame (in-place).
 
     Shows:  FPS: 19.4  |  FACE DETECTED ✓   (or  NO FACE ✗)
+    The annotated frame is then JPEG-encoded and pushed to the streamer.
     """
     h, w = frame.shape[:2]
 
-    # Semi-transparent dark bar — copy → blend → overwrite original
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, 0), (w, 45), _DARK, -1)
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
@@ -82,10 +89,10 @@ def _draw_hud(frame: np.ndarray, fps: float, detected: bool) -> None:
     cv2.putText(frame, f"FPS: {fps:5.1f}", (10, 30),
                 _FONT, 0.75, _WHITE, 2, cv2.LINE_AA)
 
-    status_text  = "FACE DETECTED  v" if detected else "NO FACE  x"
+    status_text  = "FACE DETECTED  [OK]" if detected else "NO FACE  [--]"
     status_color = _GREEN if detected else _RED
-    cv2.putText(frame, status_text, (w - 240, 30),
-                _FONT, 0.70, status_color, 2, cv2.LINE_AA)
+    cv2.putText(frame, status_text, (w - 260, 30),
+                _FONT, 0.65, status_color, 2, cv2.LINE_AA)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -94,35 +101,43 @@ def _draw_hud(frame: np.ndarray, fps: float, detected: bool) -> None:
 
 def main() -> None:
     """
-    Perception pipeline — camera capture + FaceMesh inference loop.
+    Perception pipeline + MJPEG streaming loop.
 
     Lifecycle:
-      1. Open CameraHandler  (640×480, MJPG, threaded).
-      2. Init FaceMeshDetector (478 landmarks, refine_landmarks=True).
-      3. Loop:
-           capture → detect → [annotate + display | headless log]
-      4. Graceful shutdown on 'q' key (GUI) or Ctrl+C (headless SSH).
+      1. Start MJPEGStreamer (Flask daemon thread → port 5000).
+      2. Open CameraHandler (640×480, MJPG codec, background capture thread).
+      3. Init FaceMeshDetector (478 landmarks, refine_landmarks=True).
+      4. Loop:
+           get_frame() → process() → draw_mesh() → _draw_hud() → push_frame()
+      5. Graceful teardown on Ctrl+C.
     """
-    mode_label = "HEADLESS (SSH)" if HEADLESS_MODE else "GUI (desktop)"
-    logger.info("Pipeline starting in %s mode.", mode_label)
-    if HEADLESS_MODE:
-        logger.info("Display disabled. Press Ctrl+C to stop.")
-    else:
-        logger.info("Press 'q' in the display window to exit.")
+    # ── Initialise components ─────────────────────────────────────────────────
+    streamer = MJPEGStreamer(
+        host         = STREAM_HOST,
+        port         = STREAM_PORT,
+        jpeg_quality = JPEG_QUALITY,
+    )
+    cam      = CameraHandler(src=0)
+    detector = FaceMeshDetector()
 
-    cam:      CameraHandler    = CameraHandler(src=0)   # 640×480 locked in camera.py
-    detector: FaceMeshDetector = FaceMeshDetector()
+    # Start Flask first so the endpoint is ready before inference begins.
+    streamer.start()
+    logger.info(
+        "Stream live → open http://<Pi-IP>:%d in your MacBook browser.",
+        STREAM_PORT,
+    )
+    logger.info("Press Ctrl+C to stop.")
 
-    # ── FPS tracking ───────────────────────────────────────────────────────────
-    frame_count:    int   = 0
-    fps:            float = 0.0
-    loop_tick:      float = time.perf_counter()   # per-frame delta timer
-    log_tick:       float = time.perf_counter()   # 1-second console log timer
+    # ── FPS tracking ──────────────────────────────────────────────────────────
+    frame_count: int   = 0
+    fps:         float = 0.0
+    loop_tick:   float = time.perf_counter()
+    log_tick:    float = time.perf_counter()
 
     try:
         cam.open()
 
-        # ── Main inference loop ────────────────────────────────────────────────
+        # ── Inference loop ────────────────────────────────────────────────────
         while True:
 
             # 1. Capture ───────────────────────────────────────────────────────
@@ -134,56 +149,48 @@ def main() -> None:
             # 2. Detect ────────────────────────────────────────────────────────
             result: FaceMeshResult = detector.process(frame)
 
-            # 3. FPS calculation ───────────────────────────────────────────────
+            # 3. Annotate — draw mesh then HUD bar ─────────────────────────────
+            if result.detected:
+                FaceMeshDetector.draw_mesh(frame, result)
+
             now       = time.perf_counter()
             fps       = 1.0 / max(now - loop_tick, 1e-6)
             loop_tick = now
             frame_count += 1
 
-            # 4a. GUI mode — annotate and display ──────────────────────────────
-            if not HEADLESS_MODE:
-                if result.detected:
-                    FaceMeshDetector.draw_mesh(frame, result)
-                _draw_hud(frame, fps, result.detected)
-                cv2.imshow(_WINDOW_TITLE, frame)
+            _draw_hud(frame, fps, result.detected)
 
-                # 'q' key exits; waitKey(1) keeps the window responsive.
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    logger.info("Exit signal received ('q').")
-                    break
+            # 4. Stream — push JPEG-encoded annotated frame to all clients ─────
+            streamer.push_frame(frame)
 
-            # 4b. Headless mode — print FPS once per second ────────────────────
-            else:
-                elapsed_since_log = now - log_tick
-                if elapsed_since_log >= _FPS_LOG_INTERVAL_SEC:
-                    avg_fps = frame_count / elapsed_since_log
-                    face_status = "DETECTED" if result.detected else "NOT DETECTED"
-                    print(
-                        f"[{time.strftime('%H:%M:%S')}] "
-                        f"FPS: {avg_fps:5.1f} | "
-                        f"Face: {face_status} | "
-                        f"Landmarks: {len(result.landmarks)}",
-                        flush=True,
-                    )
-                    # Reset counters for the next 1-second window.
-                    frame_count = 0
-                    log_tick    = now
+            # 5. Console FPS log (once per second, not every frame) ────────────
+            elapsed = now - log_tick
+            if elapsed >= _FPS_LOG_INTERVAL_SEC:
+                avg_fps     = frame_count / elapsed
+                face_status = "DETECTED" if result.detected else "NONE    "
+                print(
+                    f"[{time.strftime('%H:%M:%S')}] "
+                    f"FPS: {avg_fps:5.1f} | "
+                    f"Face: {face_status} | "
+                    f"Landmarks: {len(result.landmarks):3d}",
+                    flush=True,
+                )
+                frame_count = 0
+                log_tick    = now
 
     except RuntimeError as exc:
-        # Hardware-level failure: camera not found, MediaPipe OOM, etc.
         logger.error("Hardware error — %s", exc)
         sys.exit(1)
 
     except KeyboardInterrupt:
-        # Ctrl+C over SSH — the expected exit path in headless mode.
-        logger.info("KeyboardInterrupt received — shutting down.")
+        # Ctrl+C over SSH — expected exit path on the Pi.
+        logger.info("KeyboardInterrupt — shutting down.")
 
     finally:
-        # Guaranteed cleanup regardless of exit path.
-        cam.release()
+        # Order matters: stop inference sources before releasing hardware.
         detector.close()
-        if not HEADLESS_MODE:
-            cv2.destroyAllWindows()
+        cam.release()
+        streamer.stop()
         logger.info("Pipeline shut down cleanly.")
 
 
