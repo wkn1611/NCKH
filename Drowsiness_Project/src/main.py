@@ -40,6 +40,7 @@ if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
 from perception import CameraHandler, FaceMeshDetector, FaceMeshResult
+from extraction import calculate_ear
 from utils import MJPEGStreamer
 
 # ── Logging ────────────────────────────────────────────────────────────────────
@@ -73,11 +74,11 @@ _DARK:  tuple  = (20, 20, 20)
 #  HUD renderer
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _draw_hud(frame: np.ndarray, fps: float, detected: bool) -> None:
+def _draw_hud(frame: np.ndarray, fps: float, detected: bool, ear: float = 0.0) -> None:
     """
     Burn a semi-transparent status bar into the frame (in-place).
 
-    Shows:  FPS: 19.4  |  FACE DETECTED ✓   (or  NO FACE ✗)
+    Shows:  FPS: 19.4  |  FACE DETECTED ✓   |  EAR: 0.32
     The annotated frame is then JPEG-encoded and pushed to the streamer.
     """
     h, w = frame.shape[:2]
@@ -89,10 +90,14 @@ def _draw_hud(frame: np.ndarray, fps: float, detected: bool) -> None:
     cv2.putText(frame, f"FPS: {fps:5.1f}", (10, 30),
                 _FONT, 0.75, _WHITE, 2, cv2.LINE_AA)
 
-    status_text  = "FACE DETECTED  [OK]" if detected else "NO FACE  [--]"
+    status_text  = "FACE DETECTED" if detected else "NO FACE"
     status_color = _GREEN if detected else _RED
-    cv2.putText(frame, status_text, (w - 260, 30),
+    cv2.putText(frame, status_text, (w - 320, 30),
                 _FONT, 0.65, status_color, 2, cv2.LINE_AA)
+                
+    if detected:
+        cv2.putText(frame, f"EAR: {ear:.2f}", (w - 120, 30),
+                    _FONT, 0.65, (0, 255, 255), 2, cv2.LINE_AA)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -146,8 +151,12 @@ def main() -> None:
                 logger.debug("Frame not ready, skipping.")
                 continue
 
-            # 2. Detect ────────────────────────────────────────────────────────
+            # 2. Detect & Extract ──────────────────────────────────────────────
             result: FaceMeshResult = detector.process(frame)
+            
+            ear = 0.0
+            if result.detected:
+                ear = calculate_ear(result.landmarks)
 
             # 3. Annotate — draw mesh then HUD bar ─────────────────────────────
             if result.detected:
@@ -158,7 +167,7 @@ def main() -> None:
             loop_tick = now
             frame_count += 1
 
-            _draw_hud(frame, fps, result.detected)
+            _draw_hud(frame, fps, result.detected, ear)
 
             # 4. Stream — push JPEG-encoded annotated frame to all clients ─────
             streamer.push_frame(frame)
@@ -172,6 +181,7 @@ def main() -> None:
                     f"[{time.strftime('%H:%M:%S')}] "
                     f"FPS: {avg_fps:5.1f} | "
                     f"Face: {face_status} | "
+                    f"EAR: {ear:.2f} | "
                     f"Landmarks: {len(result.landmarks):3d}",
                     flush=True,
                 )
