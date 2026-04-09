@@ -7,5 +7,6 @@ Public API for the utils module.
 """
 
 from .streamer import MJPEGStreamer
+from .fps import FPSMonitor
 
-__all__ = ["MJPEGStreamer"]
+__all__ = ["MJPEGStreamer", "FPSMonitor"]

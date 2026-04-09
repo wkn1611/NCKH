@@ -41,7 +41,7 @@ if str(_SRC_DIR) not in sys.path:
 
 from perception import CameraHandler, FaceMeshDetector, FaceMeshResult
 from extraction import calculate_ear
-from utils import MJPEGStreamer
+from utils import MJPEGStreamer, FPSMonitor
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -134,9 +134,8 @@ def main() -> None:
     logger.info("Press Ctrl+C to stop.")
 
     # ── FPS tracking ──────────────────────────────────────────────────────────
+    fps_monitor = FPSMonitor(window_size=30)
     frame_count: int   = 0
-    fps:         float = 0.0
-    loop_tick:   float = time.perf_counter()
     log_tick:    float = time.perf_counter()
 
     try:
@@ -162,9 +161,10 @@ def main() -> None:
             if result.detected:
                 FaceMeshDetector.draw_mesh(frame, result)
 
-            now       = time.perf_counter()
-            fps       = 1.0 / max(now - loop_tick, 1e-6)
-            loop_tick = now
+            fps_monitor.update()
+            fps = fps_monitor.get_fps()
+            
+            now = time.perf_counter()
             frame_count += 1
 
             _draw_hud(frame, fps, result.detected, ear)
