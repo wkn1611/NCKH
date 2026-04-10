@@ -41,6 +41,7 @@ if str(_SRC_DIR) not in sys.path:
 
 from perception import CameraHandler, FaceMeshDetector, FaceMeshResult
 from extraction import calculate_ear
+from intelligence import DrowsinessDetector, DrowsinessState
 from utils import MJPEGStreamer, FPSMonitor
 
 # ── Logging ────────────────────────────────────────────────────────────────────
@@ -74,11 +75,11 @@ _DARK:  tuple  = (20, 20, 20)
 #  HUD renderer
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _draw_hud(frame: np.ndarray, fps: float, detected: bool, ear: float = 0.0) -> None:
+def _draw_hud(frame: np.ndarray, fps: float, detected: bool, ear: float = 0.0, state_str: str = "WAITING") -> None:
     """
     Burn a semi-transparent status bar into the frame (in-place).
 
-    Shows:  FPS: 19.4  |  FACE DETECTED ✓   |  EAR: 0.32
+    Shows:  FPS: 19.4  |  STATE: AWAKE   |  EAR: 0.32
     The annotated frame is then JPEG-encoded and pushed to the streamer.
     """
     h, w = frame.shape[:2]
@@ -90,10 +91,23 @@ def _draw_hud(frame: np.ndarray, fps: float, detected: bool, ear: float = 0.0) -
     cv2.putText(frame, f"FPS: {fps:5.1f}", (10, 30),
                 _FONT, 0.75, _WHITE, 2, cv2.LINE_AA)
 
-    status_text  = "FACE DETECTED" if detected else "NO FACE"
-    status_color = _GREEN if detected else _RED
-    cv2.putText(frame, status_text, (w - 320, 30),
-                _FONT, 0.65, status_color, 2, cv2.LINE_AA)
+    # Resolve temporal state color mapping
+    if not detected:
+        state_color = _RED
+        display_text = "NO FACE"
+    else:
+        display_text = f"STATE: {state_str}"
+        if state_str == "DROWSY":
+            state_color = (0, 0, 255)      # Red (BGR)
+        elif state_str == "AWAKE":
+            state_color = (0, 255, 0)      # Green
+        elif state_str == "BLINKING":
+            state_color = (0, 165, 255)    # Orange
+        else: # CALIBRATING
+            state_color = (255, 255, 0)    # Cyan
+
+    cv2.putText(frame, display_text, (w - 320, 30),
+                _FONT, 0.65, state_color, 2, cv2.LINE_AA)
                 
     if detected:
         cv2.putText(frame, f"EAR: {ear:.2f}", (w - 120, 30),
@@ -124,6 +138,7 @@ def main() -> None:
     )
     cam      = CameraHandler(src=0)
     detector = FaceMeshDetector()
+    daze_detector = DrowsinessDetector()
 
     # Start Flask first so the endpoint is ready before inference begins.
     streamer.start()
@@ -154,10 +169,16 @@ def main() -> None:
             result: FaceMeshResult = detector.process(frame)
             
             ear = 0.0
+            state_str = "WAITING"
+            
             if result.detected:
                 ear = calculate_ear(result.landmarks)
 
-            # 3. Annotate — draw mesh then HUD bar ─────────────────────────────
+            # 3. Intelligence — Evaluate Temporal State ────────────────────────
+            daze_state = daze_detector.update(ear, result.detected)
+            state_str = daze_state.value
+
+            # 4. Annotate — draw mesh then HUD bar ─────────────────────────────
             if result.detected:
                 FaceMeshDetector.draw_mesh(frame, result)
 
@@ -167,7 +188,7 @@ def main() -> None:
             now = time.perf_counter()
             frame_count += 1
 
-            _draw_hud(frame, fps, result.detected, ear)
+            _draw_hud(frame, fps, result.detected, ear, state_str)
 
             # 4. Stream — push JPEG-encoded annotated frame to all clients ─────
             streamer.push_frame(frame)
@@ -181,6 +202,7 @@ def main() -> None:
                     f"[{time.strftime('%H:%M:%S')}] "
                     f"FPS: {avg_fps:5.1f} | "
                     f"Face: {face_status} | "
+                    f"State: {state_str:11s} | "
                     f"EAR: {ear:.2f} | "
                     f"Landmarks: {len(result.landmarks):3d}",
                     flush=True,
