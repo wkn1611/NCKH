@@ -41,7 +41,7 @@ if str(_SRC_DIR) not in sys.path:
 
 from perception import CameraHandler, FaceMeshDetector, FaceMeshResult
 from extraction import calculate_ear
-from intelligence import DrowsinessDetector, DrowsinessState
+from intelligence import DrowsinessDetector, DrowsinessState, HeadPoseEstimator
 from utils import MJPEGStreamer, FPSMonitor
 
 # ── Logging ────────────────────────────────────────────────────────────────────
@@ -75,17 +75,24 @@ _DARK:  tuple  = (20, 20, 20)
 #  HUD renderer
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _draw_hud(frame: np.ndarray, fps: float, detected: bool, ear: float = 0.0, state_str: str = "WAITING") -> None:
+def _draw_hud(
+    frame: np.ndarray, 
+    fps: float, 
+    detected: bool, 
+    ear: float = 0.0, 
+    state_str: str = "WAITING",
+    baseline_ear: float = 0.0,
+    pitch: float = 0.0,
+    yaw: float = 0.0
+) -> None:
     """
     Burn a semi-transparent status bar into the frame (in-place).
-
-    Shows:  FPS: 19.4  |  STATE: AWAKE   |  EAR: 0.32
-    The annotated frame is then JPEG-encoded and pushed to the streamer.
+    Shows:  FPS, STATE, EAR, and Pitch/Yaw/Baseline metrics.
     """
     h, w = frame.shape[:2]
 
     overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (w, 45), _DARK, -1)
+    cv2.rectangle(overlay, (0, 0), (w, 75), _DARK, -1)
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
 
     cv2.putText(frame, f"FPS: {fps:5.1f}", (10, 30),
@@ -99,11 +106,13 @@ def _draw_hud(frame: np.ndarray, fps: float, detected: bool, ear: float = 0.0, s
         display_text = f"STATE: {state_str}"
         if state_str == "DROWSY":
             state_color = (0, 0, 255)      # Red (BGR)
-        elif state_str == "AWAKE":
+        elif state_str == "MONITORING" or state_str == "AWAKE":
             state_color = (0, 255, 0)      # Green
         elif state_str == "BLINKING":
             state_color = (0, 165, 255)    # Orange
-        else: # CALIBRATING
+        elif state_str == "DISTRACTED":
+            state_color = (255, 0, 255)    # Pink
+        else: # CALIBRATING / WAITING
             state_color = (255, 255, 0)    # Cyan
 
     cv2.putText(frame, display_text, (w - 320, 30),
@@ -112,6 +121,13 @@ def _draw_hud(frame: np.ndarray, fps: float, detected: bool, ear: float = 0.0, s
     if detected:
         cv2.putText(frame, f"EAR: {ear:.2f}", (w - 120, 30),
                     _FONT, 0.65, (0, 255, 255), 2, cv2.LINE_AA)
+                    
+        # Second row: Pitch, Yaw, Baseline
+        cv2.putText(frame, f"Pose: P:{pitch:4.0f} Y:{yaw:4.0f}", (10, 60),
+                    _FONT, 0.55, _WHITE, 1, cv2.LINE_AA)
+        if baseline_ear > 0.0:
+            cv2.putText(frame, f"BASE: {baseline_ear:.2f}", (w - 120, 60),
+                        _FONT, 0.55, (0, 255, 0), 1, cv2.LINE_AA)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -139,6 +155,7 @@ def main() -> None:
     cam      = CameraHandler(src=0)
     detector = FaceMeshDetector()
     daze_detector = DrowsinessDetector()
+    pose_estimator = HeadPoseEstimator()
 
     # Start Flask first so the endpoint is ready before inference begins.
     streamer.start()
@@ -169,13 +186,17 @@ def main() -> None:
             result: FaceMeshResult = detector.process(frame)
             
             ear = 0.0
+            pitch = yaw = roll = 0.0
+            looking_forward = False
             state_str = "WAITING"
             
             if result.detected:
                 ear = calculate_ear(result.landmarks)
+                pitch, yaw, roll = pose_estimator.estimate(result.landmarks, frame.shape[:2])
+                looking_forward = pose_estimator.is_looking_forward(yaw, pitch)
 
             # 3. Intelligence — Evaluate Temporal State ────────────────────────
-            daze_state = daze_detector.update(ear, result.detected)
+            daze_state = daze_detector.update(ear, result.detected, looking_forward)
             state_str = daze_state.value
 
             # 4. Annotate — draw mesh then HUD bar ─────────────────────────────
@@ -188,7 +209,10 @@ def main() -> None:
             now = time.perf_counter()
             frame_count += 1
 
-            _draw_hud(frame, fps, result.detected, ear, state_str)
+            _draw_hud(
+                frame, fps, result.detected, ear, state_str, 
+                daze_detector.baseline_ear, pitch, yaw
+            )
 
             # 4. Stream — push JPEG-encoded annotated frame to all clients ─────
             streamer.push_frame(frame)
@@ -204,6 +228,7 @@ def main() -> None:
                     f"Face: {face_status} | "
                     f"State: {state_str:11s} | "
                     f"EAR: {ear:.2f} | "
+                    f"Yaw: {yaw:4.0f} | "
                     f"Landmarks: {len(result.landmarks):3d}",
                     flush=True,
                 )
