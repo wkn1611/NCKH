@@ -86,6 +86,15 @@ class HeadPoseEstimator:
         _, _, _, _, _, _, euler = cv2.decomposeProjectionMatrix(proj_matrix)
         
         pitch, yaw, roll = euler.flatten()
+        
+        # OpenCV's projection matrix decomposition often results in a 180-degree 
+        # phase shift on the Pitch due to 3D model vs Camera coordinate axis mismatch.
+        # We normalize it here so 'Frontal' is centered near 0.
+        if pitch > 90:
+            pitch -= 180.0
+        elif pitch < -90:
+            pitch += 180.0
+            
         return float(pitch), float(yaw), float(roll)
 
     def is_looking_forward(self, yaw: float, pitch: float) -> bool:
