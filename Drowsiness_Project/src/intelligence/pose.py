@@ -1,6 +1,4 @@
 """
-intelligence/pose.py
-────────────────────
 Head Pose Estimation using MediaPipe landmarks and solvePnP.
 """
 
@@ -15,16 +13,13 @@ class HeadPoseEstimator:
     """
 
     def __init__(self) -> None:
-        # Standard generic 3D face model points.
-        # Order: Nose tip, Chin, Left eye (subject right), Right eye (subject left),
-        # Left mouth (subject right), Right mouth (subject left)
         self.model_points = np.array([
-            (0.0, 0.0, 0.0),             # 1: Nose tip
-            (0.0, -330.0, -65.0),        # 152: Chin
-            (-225.0, 170.0, -135.0),     # 33: Outer corner, Subject's right eye
-            (225.0, 170.0, -135.0),      # 263: Outer corner, Subject's left eye
-            (-150.0, -150.0, -125.0),    # 61: Outer corner, Subject's right mouth
-            (150.0, -150.0, -125.0)      # 291: Outer corner, Subject's left mouth
+            (0.0, 0.0, 0.0),
+            (0.0, -330.0, -65.0),
+            (-225.0, 170.0, -135.0),
+            (225.0, 170.0, -135.0),
+            (-150.0, -150.0, -125.0),
+            (150.0, -150.0, -125.0)
         ], dtype=np.float64)
         
         self._camera_matrix = None
@@ -33,7 +28,7 @@ class HeadPoseEstimator:
     def _init_camera_matrix(self, frame_shape: Tuple[int, int]) -> None:
         if self._camera_matrix is None:
             h, w = frame_shape
-            focal_length = w  # Approximation
+            focal_length = w
             center = (w / 2.0, h / 2.0)
             self._camera_matrix = np.array([
                 [focal_length, 0, center[0]],
@@ -46,20 +41,10 @@ class HeadPoseEstimator:
         landmarks: List[Tuple[float, float, float]], 
         frame_shape: Tuple[int, int]
     ) -> Tuple[float, float, float]:
-        """
-        Calculates Euler angles (Pitch, Yaw, Roll) in degrees.
-        
-        Args:
-            landmarks: 468 landmarks mapped to [0,1] from FaceMesh.
-            frame_shape: (height, width) of the image.
-            
-        Returns:
-            (pitch, yaw, roll) floats.
-        """
+        """Calculates Euler angles (Pitch, Yaw, Roll) in degrees."""
         self._init_camera_matrix(frame_shape)
         h, w = frame_shape
         
-        # Extract the 6 key 2D points into absolute pixel coordinates
         image_points = np.array([
             (landmarks[1][0] * w, landmarks[1][1] * h),
             (landmarks[152][0] * w, landmarks[152][1] * h),
@@ -80,16 +65,12 @@ class HeadPoseEstimator:
         if not success:
             return 0.0, 0.0, 0.0
             
-        # Decompose robustly
         rmat, _ = cv2.Rodrigues(rvec)
         proj_matrix = np.hstack((rmat, tvec))
         _, _, _, _, _, _, euler = cv2.decomposeProjectionMatrix(proj_matrix)
         
         pitch, yaw, roll = euler.flatten()
         
-        # OpenCV's projection matrix decomposition often results in a 180-degree 
-        # phase shift on the Pitch due to 3D model vs Camera coordinate axis mismatch.
-        # We normalize it here so 'Frontal' is centered near 0.
         if pitch > 90:
             pitch -= 180.0
         elif pitch < -90:
@@ -98,7 +79,5 @@ class HeadPoseEstimator:
         return float(pitch), float(yaw), float(roll)
 
     def is_looking_forward(self, yaw: float, pitch: float) -> bool:
-        """
-        Validates if the user's head pose constitutes 'looking forward'.
-        """
+        """Validates if the user's head pose constitutes 'looking forward'."""
         return -15.0 <= yaw <= 15.0 and -15.0 <= pitch <= 15.0

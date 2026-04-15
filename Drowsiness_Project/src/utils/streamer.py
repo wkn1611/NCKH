@@ -1,31 +1,3 @@
-"""
-utils/streamer.py
-─────────────────
-Lightweight MJPEG streaming server — Pi 4 → MacBook browser over Wi-Fi.
-
-Architecture
-────────────
-                ┌─────────────────────────────┐
-  Perception    │  main.py inference loop      │
-  thread        │  streamer.push_frame(frame)  │──► shared_frame (Lock)
-                └─────────────────────────────┘          │
-                                                          ▼
-                ┌─────────────────────────────┐   Flask daemon thread
-  MacBook       │  GET /video_feed            │◄──  _generate() polls
-  browser       │  multipart/x-mixed-replace  │     shared_frame
-                └─────────────────────────────┘
-
-Key design decisions:
-  - Flask runs in a daemon thread so it dies automatically when main exits.
-  - `use_reloader=False` is mandatory — the reloader forks a child process,
-    which would break camera and lock ownership in the perception thread.
-  - `threaded=True` lets Flask handle multiple browser clients concurrently.
-  - Frames are JPEG-encoded once in push_frame() and stored as raw bytes.
-    Generators only copy bytes, never re-encode — CPU cost stays constant
-    regardless of how many browser clients are connected.
-  - A threading.Condition replaces a bare Lock + sleep loop: generators
-    block on cond.wait(timeout) instead of spinning, saving CPU on the Pi.
-"""
 
 import logging
 import threading
@@ -53,7 +25,7 @@ _INDEX_HTML: str = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Drowsiness Detection — Live Feed</title>
+  <title></title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {

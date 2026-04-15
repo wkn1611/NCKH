@@ -7,10 +7,11 @@ Downstream modules import from here, not from submodules directly:
     from perception import CameraHandler, FaceMeshDetector, FaceMeshResult
 """
 
-from .camera import CameraHandler
+from .camera import VideoStream, CameraHandler
 from .face_mesh import FaceMeshDetector, FaceMeshResult
 
 __all__ = [
+    "VideoStream",
     "CameraHandler",
     "FaceMeshDetector",
     "FaceMeshResult",

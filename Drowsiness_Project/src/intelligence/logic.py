@@ -1,8 +1,5 @@
 """
-intelligence/logic.py
-─────────────────────
 Temporal state machine for Drowsiness Detection.
-Incorporates Head Pose validation and dynamic EAR baselining.
 """
 
 import time
@@ -37,7 +34,6 @@ class DrowsinessDetector:
         self.state = DrowsinessState.WAITING
         self.baseline_ear = 0.0
         
-        # Internal Timers & Buffers
         self._last_tick = 0.0
         self._calib_accumulated_time = 0.0
         self._calib_ears = []
@@ -46,6 +42,7 @@ class DrowsinessDetector:
         self._distracted_time = 0.0
 
     def update(self, ear: float, face_detected: bool, looking_forward: bool) -> DrowsinessState:
+        """Evaluates the current EAR against temporal thresholds and updates the state."""
         now = time.time()
         
         if self._last_tick == 0.0:
@@ -55,15 +52,11 @@ class DrowsinessDetector:
         dt = now - self._last_tick
         self._last_tick = now
         
-        # ── 1. Check Face Lock ────────────────────────────────────────────────
         if not face_detected:
-            # Drop timers so we don't erroneously carry over bad state
             self._eyes_closed_time = 0.0
             self._distracted_time = 0.0
-            # State technically remains what it was, effectively paused/invalid
             return self.state
 
-        # ── 2. Calibration Phase ──────────────────────────────────────────────
         if self.baseline_ear == 0.0:
             if looking_forward:
                 self.state = DrowsinessState.CALIBRATING
@@ -74,29 +67,24 @@ class DrowsinessDetector:
                     if len(self._calib_ears) > 0:
                         self.baseline_ear = float(np.percentile(self._calib_ears, 90))
                     else:
-                        self.baseline_ear = 0.3 # Fallback
+                        self.baseline_ear = 0.3
                     self.state = DrowsinessState.MONITORING
             else:
                 self.state = DrowsinessState.WAITING
             return self.state
             
-        # ── 3. Monitored Phase (Temporal Logic) ───────────────────────────────
         threshold_ear = self.baseline_ear * self.ear_drop_ratio
         
-        # Evaluate Eye Closure
         if ear < threshold_ear:
             self._eyes_closed_time += dt
         else:
             self._eyes_closed_time = 0.0
             
-        # Evaluate Head Pose Distraction
         if not looking_forward:
             self._distracted_time += dt
         else:
             self._distracted_time = 0.0
             
-        # ── 4. Priority Resolution ────────────────────────────────────────────
-        # DROWSY overrides DISTRACTED overrides MONITORING
         if self._eyes_closed_time >= self.alarm_time:
             self.state = DrowsinessState.DROWSY
         elif self._distracted_time >= self.distraction_time:
