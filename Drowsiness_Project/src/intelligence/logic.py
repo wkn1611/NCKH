@@ -7,10 +7,11 @@ import numpy as np
 from enum import Enum
 
 class DrowsinessState(Enum):
-    WAITING = "WAITING"
+    WAITING    = "WAITING"
     CALIBRATING = "CALIBRATING"
     MONITORING = "MONITORING"
-    DROWSY = "DROWSY"
+    YAWNING    = "YAWNING"
+    DROWSY     = "DROWSY"
     DISTRACTED = "DISTRACTED"
 
 class DrowsinessDetector:
@@ -39,10 +40,17 @@ class DrowsinessDetector:
         self._calib_ears = []
         
         self._eyes_closed_time = 0.0
-        self._distracted_time = 0.0
+        self._distracted_time  = 0.0
+        self.is_yawning        = False
 
-    def update(self, ear: float, face_detected: bool, looking_forward: bool) -> DrowsinessState:
-        """Evaluates the current EAR against temporal thresholds and updates the state."""
+    def update(
+        self,
+        ear: float,
+        face_detected: bool,
+        looking_forward: bool,
+        yawn_detected: bool = False,
+    ) -> DrowsinessState:
+        """Evaluates EAR, pose, and yawn signal against temporal thresholds."""
         now = time.time()
         
         if self._last_tick == 0.0:
@@ -54,7 +62,8 @@ class DrowsinessDetector:
         
         if not face_detected:
             self._eyes_closed_time = 0.0
-            self._distracted_time = 0.0
+            self._distracted_time  = 0.0
+            self.is_yawning        = False
             return self.state
 
         if self.baseline_ear == 0.0:
@@ -85,10 +94,14 @@ class DrowsinessDetector:
         else:
             self._distracted_time = 0.0
             
+        self.is_yawning = yawn_detected
+
         if self._eyes_closed_time >= self.alarm_time:
             self.state = DrowsinessState.DROWSY
         elif self._distracted_time >= self.distraction_time:
             self.state = DrowsinessState.DISTRACTED
+        elif yawn_detected:
+            self.state = DrowsinessState.YAWNING
         else:
             self.state = DrowsinessState.MONITORING
             

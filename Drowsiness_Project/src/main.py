@@ -17,8 +17,10 @@ if str(_SRC_DIR) not in sys.path:
 
 from perception import VideoStream, FaceMeshDetector, FaceMeshResult
 from extraction import calculate_ear
-from intelligence import DrowsinessDetector, HeadPoseEstimator
+from intelligence import DrowsinessDetector, HeadPoseEstimator, YawnDetectorCNN
 from utils import MJPEGStreamer, FPSMonitor
+
+_MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +44,7 @@ _DARK:  Tuple[int, int, int] = (20, 20, 20)
 
 _STATE_COLORS = {
     "DROWSY":      (0, 0, 255),
+    "YAWNING":     (0, 100, 255),
     "MONITORING":  (0, 255, 0),
     "AWAKE":       (0, 255, 0),
     "BLINKING":    (0, 165, 255),
@@ -58,6 +61,7 @@ def _draw_hud(
     baseline_ear: float,
     pitch: float,
     yaw: float,
+    yawn_detected: bool = False,
 ) -> None:
     """Renders semi-transparent HUD status bar onto the frame in-place."""
     h, w = frame.shape[:2]
@@ -77,6 +81,9 @@ def _draw_hud(
     cv2.putText(frame, f"Pose: P:{pitch:4.0f} Y:{yaw:4.0f}", (10, 60), _FONT, 0.55, _WHITE, 1, cv2.LINE_AA)
     if baseline_ear > 0.0:
         cv2.putText(frame, f"BASE: {baseline_ear:.2f}", (w - 120, 60), _FONT, 0.55, (0, 255, 0), 1, cv2.LINE_AA)
+    yawn_label = "YAWNING" if yawn_detected else "Normal"
+    yawn_color = (0, 100, 255) if yawn_detected else (180, 180, 180)
+    cv2.putText(frame, f"Yawn: {yawn_label}", (10, 30 + (frame.shape[0] - 75)), _FONT, 0.6, yawn_color, 2, cv2.LINE_AA)
 
 
 def main() -> None:
@@ -86,6 +93,7 @@ def main() -> None:
     detector       = FaceMeshDetector()
     daze_detector  = DrowsinessDetector()
     pose_estimator = HeadPoseEstimator()
+    yawn_detector  = YawnDetectorCNN(_MODELS_DIR / "yawn_detector.tflite")
     fps_monitor    = FPSMonitor(window_size=30)
 
     streamer.start()
@@ -98,6 +106,7 @@ def main() -> None:
     yaw:             float = 0.0
     roll:            float = 0.0
     looking_forward: bool  = False
+    yawn_detected:   bool  = False
     state_str:       str   = "WAITING"
     result:          Optional[FaceMeshResult] = None
 
@@ -117,10 +126,12 @@ def main() -> None:
             if frame_count % SKIP_FRAMES == 0 and result.detected:
                 ear = calculate_ear(result.landmarks)
                 pitch, yaw, roll = pose_estimator.estimate(result.landmarks, frame.shape[:2])
-                looking_forward = pose_estimator.is_looking_forward(yaw, pitch)
-                daze_state = daze_detector.update(ear, result.detected, looking_forward)
-                state_str = daze_state.value
+                looking_forward  = pose_estimator.is_looking_forward(yaw, pitch)
+                yawn_detected    = yawn_detector.predict_yawn(frame, result.landmarks)
+                daze_state = daze_detector.update(ear, result.detected, looking_forward, yawn_detected)
+                state_str  = daze_state.value
             elif not result.detected:
+                yawn_detected = False
                 daze_detector.update(0.0, False, False)
                 state_str = daze_detector.state.value
 
@@ -134,7 +145,7 @@ def main() -> None:
             frame_count += 1
 
             _draw_hud(frame, fps, result.detected, ear, state_str,
-                      daze_detector.baseline_ear, pitch, yaw)
+                      daze_detector.baseline_ear, pitch, yaw, yawn_detected)
             streamer.push_frame(frame)
 
             # ── Console log (once per second) ─────────────────────────────────
@@ -146,6 +157,7 @@ def main() -> None:
                     f"[{time.strftime('%H:%M:%S')}] "
                     f"FPS: {avg_fps:5.1f} | Face: {face_status} | "
                     f"State: {state_str:11s} | EAR: {ear:.2f} | "
+                    f"Yawn: {'YES' if yawn_detected else 'NO ':3s} | "
                     f"Yaw: {yaw:4.0f} | Landmarks: {len(result.landmarks):3d}",
                     flush=True,
                 )
